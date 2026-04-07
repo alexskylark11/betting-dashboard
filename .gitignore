@@ -1,0 +1,7 @@
+.env
+data/betting.db
+data/cache/
+data/logs/
+__pycache__/
+*.pyc
+.claude/
