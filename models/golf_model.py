@@ -148,6 +148,29 @@ def monte_carlo_tournament(
     return results
 
 
+def _load_seed_stats() -> Dict[str, Dict]:
+    """Load strokes gained seed data from CSV if available."""
+    import os, csv
+    csv_path = os.path.join(os.path.dirname(__file__), "..", "data", "seeds", "masters_strokes_gained.csv")
+    if not os.path.exists(csv_path):
+        return {}
+    stats = {}
+    with open(csv_path, "r") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            name = row.get("name", "").strip()
+            if name:
+                stats[name] = {
+                    "sg_total": float(row.get("sg_total", 0)),
+                    "sg_off_tee": float(row.get("sg_off_tee", 0)),
+                    "sg_approach": float(row.get("sg_approach", 0)),
+                    "sg_around_green": float(row.get("sg_around_green", 0)),
+                    "sg_putting": float(row.get("sg_putting", 0)),
+                    "consistency": float(row.get("consistency", 2.0)),
+                }
+    return stats
+
+
 def build_profiles_from_data(
     leaderboard: List[Dict],
     rankings: List[Dict] = None,
@@ -156,15 +179,12 @@ def build_profiles_from_data(
 ) -> List[GolferProfile]:
     """Build GolferProfile objects from available data sources.
 
-    Args:
-        leaderboard: ESPN leaderboard data
-        rankings: OWGR rankings
-        stats: {player_name: {sg_total, sg_approach, ...}}
-        course_history: {player_name: [finish_positions]}
-
-    Returns:
-        List of GolferProfile with whatever data is available.
+    Automatically loads seed CSV data if no stats dict is provided.
     """
+    # Auto-load seed data if none provided
+    if stats is None:
+        stats = _load_seed_stats()
+
     ranking_map = {}
     if rankings:
         for r in rankings:
@@ -179,7 +199,7 @@ def build_profiles_from_data(
         profile = GolferProfile(name=name)
         profile.world_ranking = ranking_map.get(name, 200)
 
-        # Populate stats if available
+        # Populate stats from seed data or provided stats
         if stats and name in stats:
             s = stats[name]
             profile.sg_total = s.get("sg_total", 0.0)
