@@ -491,11 +491,15 @@ with tab_betslip:
             for bet in settled_bets[:10]:
                 result_color = {"win": "#00C853", "loss": "#FF5252", "push": "#FFC107"}.get(bet["result"], "#888")
                 odds_str = f"+{bet['american_odds']}" if bet["american_odds"] > 0 else str(bet["american_odds"])
+                payout_str = ""
+                if bet.get("payout"):
+                    payout_val = bet["payout"]
+                    payout_str = f" | Payout: ${payout_val:.2f}"
                 st.markdown(
                     f"**{bet['player_name']}** | {bet['market']} | {odds_str} | "
                     f"${bet['stake']:.2f} | "
                     f"<span style='color:{result_color};font-weight:700'>{bet['result'].upper()}</span>"
-                    f"{f' | Payout: ${bet[\"payout\"]:.2f}' if bet.get('payout') else ''}",
+                    f"{payout_str}",
                     unsafe_allow_html=True,
                 )
 
@@ -637,8 +641,11 @@ with tab_parlay:
 
             # Place parlay button
             if st.button("Place Parlay", type="primary", key="par_place"):
-                leg_desc = " + ".join([f"{l['player']} ({f'+{l[\"odds\"]}' if l['odds'] > 0 else l['odds']})"
-                                        for l in legs])
+                leg_parts = []
+                for l in legs:
+                    o = f"+{l['odds']}" if l['odds'] > 0 else str(l['odds'])
+                    leg_parts.append(f"{l['player']} ({o})")
+                leg_desc = " + ".join(leg_parts)
                 bet_id = place_bet(
                     player_name=f"PARLAY: {', '.join(l['player'] for l in legs)}",
                     sport="golf", event_name="Masters Tournament 2026",
