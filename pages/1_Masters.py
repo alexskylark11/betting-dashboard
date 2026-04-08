@@ -505,40 +505,105 @@ with tab_betslip:
 
 # ── Tab 6: Parlay Builder ───────────────────────────────────────────────────
 
+# Market definitions with descriptions
+PARLAY_MARKETS = {
+    "Top 5 Finish": {"key": "top5", "desc": "Player finishes in the top 5"},
+    "Top 10 Finish": {"key": "top10", "desc": "Player finishes in the top 10"},
+    "Top 20 Finish": {"key": "top20", "desc": "Player finishes in the top 20"},
+    "Make the Cut": {"key": "make_cut", "desc": "Player makes the weekend cut"},
+    "Outright Winner": {"key": "win", "desc": "Player wins the tournament"},
+}
+
+# Rough odds multipliers for non-outright markets (since API only gives outrights)
+# These approximate typical sportsbook pricing for placement markets
+MARKET_ODDS_FACTOR = {
+    "win": 1.0,        # use actual outright odds
+    "top5": 0.18,      # ~5x shorter than outright
+    "top10": 0.30,     # ~3x shorter
+    "top20": 0.50,     # ~2x shorter
+    "make_cut": 0.70,  # much shorter
+}
+
 with tab_parlay:
     st.subheader("Build a Parlay")
+    st.caption(
+        "Select a market for each leg. Top 5/10/20 and Make Cut bets can all hit "
+        "in the same tournament — unlike outright winners where only one can win."
+    )
 
     if not odds_by_book:
         st.warning("No odds data available.")
     else:
-        # Initialize parlay state
         if "parlay_legs" not in st.session_state:
             st.session_state.parlay_legs = []
 
-        # Player selection
+        # ── Add a leg ────────────────────────────────────────────────────
+
         col_add, col_preview = st.columns([2, 1])
 
         with col_add:
             players_sorted = sorted(player_book_odds.keys())
-            p_sel = st.selectbox("Add player to parlay", players_sorted, key="par_player")
+            p_sel = st.selectbox("Player", players_sorted, key="par_player")
+            p_market = st.selectbox("Market", list(PARLAY_MARKETS.keys()), index=1, key="par_market")
+            market_key = PARLAY_MARKETS[p_market]["key"]
 
             if p_sel and p_sel in player_book_odds:
                 p_books = sorted(player_book_odds[p_sel].keys())
-                # Auto-select best odds book
                 best_book = max(p_books, key=lambda b: player_book_odds[p_sel][b])
                 p_book = st.selectbox("Sportsbook", p_books,
                                        index=p_books.index(best_book), key="par_book")
-                p_odds = player_book_odds[p_sel][p_book]
-                st.markdown(f"**{p_sel}** @ **+{p_odds}** ({p_book})" if p_odds > 0
-                            else f"**{p_sel}** @ **{p_odds}** ({p_book})")
+                outright_odds = player_book_odds[p_sel][p_book]
+
+                # Estimate odds for non-outright markets
+                if market_key == "win":
+                    leg_odds = outright_odds
+                else:
+                    # Convert outright odds to placement odds
+                    outright_prob = american_to_implied_prob(outright_odds)
+                    factor = MARKET_ODDS_FACTOR[market_key]
+                    # Approximate: top-N prob is roughly outright_prob / factor_ratio
+                    placement_prob = min(outright_prob / factor + (1 - 1/factor) * 0.5, 0.85)
+                    placement_prob = max(placement_prob, outright_prob)
+                    from utils.odds_math import implied_prob_to_american
+                    try:
+                        leg_odds = implied_prob_to_american(placement_prob)
+                    except ValueError:
+                        leg_odds = -200
+
+                odds_display = f"+{leg_odds}" if leg_odds > 0 else str(leg_odds)
+                dec_display = american_to_decimal(leg_odds)
+
+                # Get model probability for this market
+                model_market_prob = None
+                try:
+                    profiles = build_profiles_from_data(leaderboard, rankings)
+                    mc = monte_carlo_tournament(profiles, n_simulations=10000, seed=42)
+                    if p_sel in mc:
+                        model_market_prob = mc[p_sel].get(market_key, 0)
+                except Exception:
+                    pass
+
+                st.markdown(f"""
+                <div class="parlay-leg">
+                    <span class="leg-player">{p_sel}</span>
+                    <span class="leg-odds" style="float:right">{odds_display} ({dec_display:.2f}x)</span>
+                    <div style="color:#888;font-size:0.8rem">{p_market} | {p_book}
+                    {f' | Model: {model_market_prob:.1%}' if model_market_prob else ''}</div>
+                </div>
+                """, unsafe_allow_html=True)
 
                 if st.button("Add to Parlay", key="par_add"):
-                    # Avoid duplicates
-                    if not any(l["player"] == p_sel for l in st.session_state.parlay_legs):
+                    # Check: warn if adding outright winner when one already exists
+                    existing_outrights = [l for l in st.session_state.parlay_legs if l["market_key"] == "win"]
+                    if market_key == "win" and existing_outrights:
+                        st.warning("Only one player can win — consider using Top 5/10/20 instead.")
+                    else:
                         st.session_state.parlay_legs.append({
-                            "player": p_sel, "book": p_book, "odds": p_odds,
+                            "player": p_sel, "book": p_book, "odds": leg_odds,
+                            "market": p_market, "market_key": market_key,
+                            "model_prob": model_market_prob,
                         })
-                    st.rerun()
+                        st.rerun()
 
         with col_preview:
             st.markdown("**Parlay Legs**")
@@ -549,17 +614,29 @@ with tab_parlay:
                     <div class="parlay-leg">
                         <span class="leg-player">{leg['player']}</span>
                         <span class="leg-odds" style="float:right">{odds_str}</span>
-                        <div style="color:#888;font-size:0.8rem">{leg['book']}</div>
+                        <div style="color:#888;font-size:0.8rem">{leg['market']} | {leg['book']}</div>
                     </div>
                     """, unsafe_allow_html=True)
+
+                # Remove individual legs
+                if len(st.session_state.parlay_legs) > 0:
+                    remove_idx = st.selectbox("Remove leg", range(len(st.session_state.parlay_legs)),
+                                               format_func=lambda i: st.session_state.parlay_legs[i]["player"],
+                                               key="par_remove_sel")
+                    col_rm, col_clr = st.columns(2)
+                    with col_rm:
+                        if st.button("Remove", key="par_remove"):
+                            st.session_state.parlay_legs.pop(remove_idx)
+                            st.rerun()
+                    with col_clr:
+                        if st.button("Clear All", key="par_clear"):
+                            st.session_state.parlay_legs = []
+                            st.rerun()
             else:
-                st.caption("No legs added yet.")
+                st.caption("No legs added yet. Pick a player and market above.")
 
-            if st.session_state.parlay_legs and st.button("Clear Parlay", key="par_clear"):
-                st.session_state.parlay_legs = []
-                st.rerun()
+        # ── Parlay card + payout calc ────────────────────────────────────
 
-        # Parlay calculation and bet card
         if len(st.session_state.parlay_legs) >= 2:
             st.divider()
 
@@ -567,15 +644,15 @@ with tab_parlay:
             combined_decimal = parlay_decimal_odds([american_to_decimal(l["odds"]) for l in legs])
             combined_american = parlay_american_odds([l["odds"] for l in legs])
 
-            # Estimate joint probability from model
-            try:
-                profiles = build_profiles_from_data(leaderboard, rankings)
-                scores = compute_composite_scores(profiles)
-                probs = scores_to_probabilities(scores)
-                joint_prob = 1.0
-                for leg in legs:
-                    joint_prob *= probs.get(leg["player"], 0.01)
-            except Exception:
+            # Joint probability from model
+            joint_prob = 1.0
+            for leg in legs:
+                lp = leg.get("model_prob")
+                if lp and lp > 0:
+                    joint_prob *= lp
+                else:
+                    joint_prob *= 0.01
+            if joint_prob >= 1:
                 joint_prob = None
 
             parlay_ev = None
@@ -587,7 +664,7 @@ with tab_parlay:
             parlay_payout = parlay_stake * combined_decimal
             parlay_profit = parlay_payout - parlay_stake
 
-            # Parlay bet card
+            # Build bet card HTML
             ev_class = "positive" if (parlay_ev and parlay_ev > 0) else "negative"
             ev_badge = ""
             if parlay_ev is not None:
@@ -595,22 +672,23 @@ with tab_parlay:
                 ev_badge = f'<span class="ev-badge {badge_class}">EV: ${parlay_ev:.3f}</span>'
 
             am_str = f"+{combined_american}" if combined_american > 0 else str(combined_american)
+            jp_str = f"{joint_prob:.4%}" if joint_prob else "N/A"
 
             legs_html = ""
             for leg in legs:
                 o = f"+{leg['odds']}" if leg['odds'] > 0 else str(leg['odds'])
+                mp = f" | Model: {leg['model_prob']:.1%}" if leg.get('model_prob') else ""
                 legs_html += f"""
                 <div class="parlay-leg">
                     <span class="leg-player">{leg['player']}</span>
                     <span class="leg-odds" style="float:right">{o}</span>
-                    <div style="color:#888;font-size:0.8rem">{leg['book']}</div>
+                    <div style="color:#888;font-size:0.8rem">{leg['market']} | {leg['book']}{mp}</div>
                 </div>"""
 
             st.markdown(f"""
             <div class="bet-card parlay">
                 <div class="player">{len(legs)}-Leg Parlay {ev_badge}</div>
-                <div class="detail">Combined: {am_str} ({combined_decimal:.1f}x) |
-                    Joint Prob: {f'{joint_prob:.4%}' if joint_prob else 'N/A'}</div>
+                <div class="detail">Combined: {am_str} ({combined_decimal:.1f}x) | Joint Prob: {jp_str}</div>
                 {legs_html}
                 <div class="payout" style="margin-top:12px">Payout: ${parlay_payout:,.2f}</div>
                 <div class="profit">Profit: ${parlay_profit:,.2f}</div>
@@ -644,52 +722,19 @@ with tab_parlay:
                 leg_parts = []
                 for l in legs:
                     o = f"+{l['odds']}" if l['odds'] > 0 else str(l['odds'])
-                    leg_parts.append(f"{l['player']} ({o})")
+                    leg_parts.append(f"{l['player']} {l['market']} ({o})")
                 leg_desc = " + ".join(leg_parts)
                 bet_id = place_bet(
-                    player_name=f"PARLAY: {', '.join(l['player'] for l in legs)}",
+                    player_name=f"PARLAY: {', '.join(l['player'] + ' ' + l['market'] for l in legs)}",
                     sport="golf", event_name="Masters Tournament 2026",
                     market="parlay", sportsbook="Multi",
                     american_odds=combined_american, stake=parlay_stake,
                     model_prob=joint_prob, ev=parlay_ev,
                 )
-                st.success(f"Parlay #{bet_id} placed: {leg_desc} for ${parlay_stake:.2f} | Payout: ${parlay_payout:,.2f}")
+                st.success(f"Parlay #{bet_id} placed: {leg_desc}")
+                st.success(f"Stake: ${parlay_stake:.2f} | Payout: ${parlay_payout:,.2f}")
                 st.session_state.parlay_legs = []
                 st.rerun()
 
         elif len(st.session_state.parlay_legs) == 1:
             st.info("Add at least 2 legs to build a parlay.")
-
-        # ── Auto-Optimizer ───────────────────────────────────────────────────
-
-        st.divider()
-        st.subheader("Suggested Parlays")
-
-        try:
-            if odds_by_book and leaderboard:
-                profiles = build_profiles_from_data(leaderboard, rankings)
-                mc_results = monte_carlo_tournament(profiles, n_simulations=10000, seed=42)
-                preds = {name: r["win"] for name, r in mc_results.items()}
-                ev_pool = find_ev_bets(preds, odds_by_book, min_ev=0.01)
-
-                if ev_pool:
-                    suggested = find_optimal_parlays(ev_pool, max_legs=3, min_parlay_ev=0.0, max_results=5)
-                    if suggested:
-                        for i, p in enumerate(suggested):
-                            combo_dec = p.combined_decimal_odds
-                            combo_am = parlay_american_odds([l.best_odds for l in p.legs])
-                            am_display = f"+{combo_am}" if combo_am > 0 else str(combo_am)
-                            with st.expander(
-                                f"#{i+1} | {p.leg_count} legs | {am_display} ({combo_dec:.0f}x) | "
-                                f"EV: ${p.ev_per_dollar:.3f}"
-                            ):
-                                for leg in p.legs:
-                                    o = f"+{leg.best_odds}" if leg.best_odds > 0 else str(leg.best_odds)
-                                    st.write(f"  **{leg.player}** @ {o} ({leg.best_book}) - Model: {leg.model_prob:.1%}")
-                                st.write(f"**$10 bet pays ${10 * combo_dec:,.2f}**")
-                    else:
-                        st.caption("No profitable parlays found.")
-                else:
-                    st.caption("No +EV singles to build parlays from.")
-        except Exception as e:
-            st.error(f"Error generating parlays: {e}")
