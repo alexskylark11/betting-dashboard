@@ -155,29 +155,22 @@ books = sorted(odds_by_book.keys()) if odds_by_book else []
 
 # ── Shared model computation (run once, reuse across tabs) ───────────────────
 
-def _run_model_cached():
-    """Run model once per session, cache in session_state."""
-    cache_key = "_model_results"
-    if cache_key in st.session_state:
-        return st.session_state[cache_key]
+def _run_model():
+    """Run model fresh each page load (deterministic with seed=42, ~2s for 50K sims)."""
     profiles = build_profiles_from_data(leaderboard, rankings)
     if not profiles:
-        result = ({}, {}, {}, [])
-        st.session_state[cache_key] = result
-        return result
+        return ({}, {}, {}, [])
     scores = compute_composite_scores(profiles)
     probs = scores_to_probabilities(scores)
     mc_results = {}
     if run_monte_carlo:
         mc_results = monte_carlo_tournament(profiles, n_simulations=50000, seed=42)
-    result = (scores, probs, mc_results, profiles)
-    st.session_state[cache_key] = result
-    return result
+    return (scores, probs, mc_results, profiles)
 
 # Run once, share across all tabs
 _scores, _probs, _mc_results, _profiles = {}, {}, {}, []
 if leaderboard:
-    _scores, _probs, _mc_results, _profiles = _run_model_cached()
+    _scores, _probs, _mc_results, _profiles = _run_model()
 
 # Predictions dict for EV calculations
 predictions = {}
