@@ -153,6 +153,39 @@ if odds_by_book:
 
 books = sorted(odds_by_book.keys()) if odds_by_book else []
 
+# ── Shared model computation (run once, reuse across tabs) ───────────────────
+
+def _run_model_cached():
+    """Run model once per session, cache in session_state."""
+    cache_key = "_model_results"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+    profiles = build_profiles_from_data(leaderboard, rankings)
+    if not profiles:
+        result = ({}, {}, {}, [])
+        st.session_state[cache_key] = result
+        return result
+    scores = compute_composite_scores(profiles)
+    probs = scores_to_probabilities(scores)
+    mc_results = {}
+    if run_monte_carlo:
+        mc_results = monte_carlo_tournament(profiles, n_simulations=50000, seed=42)
+    result = (scores, probs, mc_results, profiles)
+    st.session_state[cache_key] = result
+    return result
+
+# Run once, share across all tabs
+_scores, _probs, _mc_results, _profiles = {}, {}, {}, []
+if leaderboard:
+    _scores, _probs, _mc_results, _profiles = _run_model_cached()
+
+# Predictions dict for EV calculations
+predictions = {}
+if _mc_results:
+    predictions = {name: r["win"] for name, r in _mc_results.items()}
+elif _probs:
+    predictions = _probs
+
 # ── Tabs ─────────────────────────────────────────────────────────────────────
 
 tab_leaderboard, tab_odds, tab_ev, tab_model, tab_betslip, tab_parlay = st.tabs([
@@ -227,14 +260,11 @@ with tab_odds:
 with tab_ev:
     try:
         if odds_by_book and leaderboard:
-            profiles = build_profiles_from_data(leaderboard, rankings)
-            if run_monte_carlo and profiles:
-                st.info("Running 50,000 tournament simulations...")
-                mc_results = monte_carlo_tournament(profiles, n_simulations=50000)
-                predictions = {name: r["win"] for name, r in mc_results.items()}
-            else:
-                scores = compute_composite_scores(profiles)
-                predictions = scores_to_probabilities(scores)
+            predictions = {}
+            if _mc_results:
+                predictions = {name: r["win"] for name, r in _mc_results.items()}
+            elif _probs:
+                predictions = _probs
 
             ev_bets = find_ev_bets(predictions, odds_by_book, market="outright", min_ev=min_ev)
 
@@ -298,9 +328,8 @@ with tab_ev:
 with tab_model:
     try:
         if leaderboard:
-            profiles = build_profiles_from_data(leaderboard, rankings)
-            if run_monte_carlo and profiles:
-                mc_results = monte_carlo_tournament(profiles, n_simulations=50000, seed=42)
+            if run_monte_carlo and _mc_results:
+                mc_results = _mc_results
                 st.subheader("Monte Carlo Results (50K sims)")
                 rows = []
                 for name, r in sorted(mc_results.items(), key=lambda x: x[1]["win"], reverse=True)[:40]:
@@ -321,8 +350,9 @@ with tab_model:
                                   yaxis_title="Probability (%)", template="plotly_dark", height=500)
                 st.plotly_chart(fig, use_container_width=True)
 
-            if profiles:
+            if _profiles:
                 st.subheader("Strokes Gained Radar")
+                profiles = _profiles
                 selected = st.multiselect("Select players to compare", [p.name for p in profiles],
                                            default=[p.name for p in sorted(profiles, key=lambda x: x.world_ranking)[:3]])
                 if selected:
@@ -373,17 +403,9 @@ with tab_betslip:
                 potential_payout = sel_stake * decimal_odds
                 potential_profit = potential_payout - sel_stake
 
-                # Model info if available
-                model_prob = None
-                ev_val = None
-                try:
-                    profiles = build_profiles_from_data(leaderboard, rankings)
-                    scores = compute_composite_scores(profiles)
-                    probs = scores_to_probabilities(scores)
-                    model_prob = probs.get(sel_player, 0)
-                    ev_val = ev_from_american(model_prob, sel_odds) if model_prob else None
-                except Exception:
-                    pass
+                # Model info from cached results
+                model_prob = _probs.get(sel_player, 0) if _probs else None
+                ev_val = ev_from_american(model_prob, sel_odds) if model_prob else None
 
                 kelly_rec = kelly_bet_size(bankroll, model_prob or 0.01, sel_odds,
                                            fraction=kelly_fraction, max_pct=max_bet_pct)
@@ -572,18 +594,10 @@ with tab_parlay:
                 odds_display = f"+{leg_odds}" if leg_odds > 0 else str(leg_odds)
                 dec_display = american_to_decimal(leg_odds)
 
-                # Get model probability for this market (use cached MC results)
+                # Get model probability for this market from cached MC results
                 model_market_prob = None
-                try:
-                    if "mc_cache" not in st.session_state:
-                        profiles = build_profiles_from_data(leaderboard, rankings)
-                        st.session_state.mc_cache = monte_carlo_tournament(
-                            profiles, n_simulations=10000, seed=42)
-                    mc = st.session_state.mc_cache
-                    if p_sel in mc:
-                        model_market_prob = mc[p_sel].get(market_key, 0)
-                except Exception:
-                    pass
+                if _mc_results and p_sel in _mc_results:
+                    model_market_prob = _mc_results[p_sel].get(market_key, 0)
 
                 st.markdown(f"""
                 <div class="parlay-leg">
@@ -597,7 +611,12 @@ with tab_parlay:
                 if st.button("Add to Parlay", key="par_add"):
                     # Check: warn if adding outright winner when one already exists
                     existing_outrights = [l for l in st.session_state.parlay_legs if l["market_key"] == "win"]
-                    if market_key == "win" and existing_outrights:
+                    # Check for exact duplicate (same player + same market)
+                    is_dup = any(l["player"] == p_sel and l["market_key"] == market_key
+                                for l in st.session_state.parlay_legs)
+                    if is_dup:
+                        st.warning(f"{p_sel} {p_market} is already in your parlay.")
+                    elif market_key == "win" and existing_outrights:
                         st.warning("Only one player can win — consider using Top 5/10/20 instead.")
                     else:
                         st.session_state.parlay_legs.append({
