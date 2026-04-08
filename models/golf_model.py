@@ -150,10 +150,24 @@ def monte_carlo_tournament(
 
 def _load_seed_stats() -> Dict[str, Dict]:
     """Load strokes gained seed data from CSV if available."""
-    import os, csv
-    csv_path = os.path.join(os.path.dirname(__file__), "..", "data", "seeds", "masters_strokes_gained.csv")
-    if not os.path.exists(csv_path):
-        return {}
+    from pathlib import Path
+    import csv
+
+    # Try multiple path resolutions for compatibility across environments
+    candidates = [
+        Path(__file__).resolve().parent.parent / "data" / "seeds" / "masters_strokes_gained.csv",
+        Path.cwd() / "data" / "seeds" / "masters_strokes_gained.csv",
+    ]
+
+    csv_path = None
+    for c in candidates:
+        if c.exists():
+            csv_path = c
+            break
+
+    if csv_path is None:
+        return _fallback_seed_stats()
+
     stats = {}
     with open(csv_path, "r") as f:
         reader = csv.DictReader(f)
@@ -168,6 +182,78 @@ def _load_seed_stats() -> Dict[str, Dict]:
                     "sg_putting": float(row.get("sg_putting", 0)),
                     "consistency": float(row.get("consistency", 2.0)),
                 }
+    return stats if stats else _fallback_seed_stats()
+
+
+def _fallback_seed_stats() -> Dict[str, Dict]:
+    """Hardcoded seed data for top players — used when CSV can't be found."""
+    raw = {
+        "Scottie Scheffler":  (2.50, 0.45, 0.89, 0.52, 0.36, 1.61),
+        "Xander Schauffele":  (2.00, 0.42, 0.99, 0.31, 0.42, 1.58),
+        "Rory McIlroy":       (1.80, 0.30, 0.82, 0.51, 0.33, 1.57),
+        "Jon Rahm":           (1.70, 0.36, 0.41, 0.15, 0.10, 1.74),
+        "Collin Morikawa":    (1.60, 0.50, 0.77, 0.38, 0.07, 1.66),
+        "Ludvig Aberg":       (1.50, 0.23, 0.74, 0.20, 0.28, 1.98),
+        "Viktor Hovland":     (1.40, 0.26, 0.20,-0.08, 0.58, 2.17),
+        "Sahith Theegala":    (1.30, 0.56, 0.50, 0.36, 0.33, 1.94),
+        "Hideki Matsuyama":   (1.30, 0.32, 0.32, 0.11, 0.34, 1.95),
+        "Brooks Koepka":      (1.30, 0.12, 0.47,-0.01, 0.23, 1.93),
+        "Patrick Cantlay":    (1.20, 0.18, 0.16, 0.47, 0.27, 1.84),
+        "Jordan Spieth":      (1.20, 0.66, 0.38, 0.30, 0.05, 2.02),
+        "Wyndham Clark":      (1.20, 0.66, 0.23, 0.29, 0.18, 1.98),
+        "Sam Burns":          (1.10, 0.48, 0.19, 0.35, 0.40, 1.84),
+        "Shane Lowry":        (1.10, 0.05, 0.17, 0.25, 0.15, 1.90),
+        "Justin Thomas":      (1.10, 0.33, 0.40,-0.07, 0.51, 1.94),
+        "Tommy Fleetwood":    (1.00, 0.46, 0.21, 0.25, 0.45, 1.99),
+        "Tony Finau":         (1.00, 0.26, 0.60, 0.13, 0.49, 1.93),
+        "Sungjae Im":         (1.00, 0.48, 0.57, 0.30, 0.23, 2.13),
+        "Cameron Smith":      (0.90, 0.29, 0.20, 0.04, 0.07, 1.98),
+        "Keegan Bradley":     (0.90, 0.31, 0.41,-0.13, 0.17, 1.98),
+        "Tom Kim":            (0.90,-0.02, 0.44, 0.07, 0.15, 2.17),
+        "Robert MacIntyre":   (0.85, 0.03, 0.25, 0.00, 0.12, 1.90),
+        "Corey Conners":      (0.85, 0.17, 0.42, 0.39,-0.12, 1.99),
+        "Min Woo Lee":        (0.80, 0.43, 0.30,-0.10, 0.10, 1.85),
+        "Russell Henley":     (0.80, 0.43, 0.22,-0.13, 0.22, 1.93),
+        "Sepp Straka":        (0.80, 0.09, 0.21, 0.01, 0.23, 1.88),
+        "Denny McCarthy":     (0.75, 0.10, 0.56,-0.07, 0.25, 2.01),
+        "Brian Harman":       (0.70, 0.38, 0.02, 0.02,-0.03, 1.92),
+        "Matt Fitzpatrick":   (0.70, 0.01, 0.52, 0.24, 0.19, 2.01),
+        "Cameron Young":      (0.70, 0.20, 0.16,-0.02, 0.07, 1.96),
+        "Tyrrell Hatton":     (0.65, 0.42, 0.48, 0.38, 0.31, 1.89),
+        "Chris Kirk":         (0.65, 0.15, 0.12, 0.01,-0.10, 2.09),
+        "Jason Day":          (0.65, 0.14,-0.07, 0.01, 0.15, 1.88),
+        "Si Woo Kim":         (0.60, 0.19, 0.03, 0.31, 0.31, 2.19),
+        "Adam Scott":         (0.60, 0.09, 0.29, 0.19, 0.36, 1.85),
+        "Will Zalatoris":     (0.60, 0.29, 0.51, 0.38,-0.10, 1.95),
+        "Max Homa":           (0.55,-0.11, 0.22,-0.11, 0.11, 1.86),
+        "Billy Horschel":     (0.50, 0.33, 0.03,-0.10, 0.00, 2.42),
+        "Byeong Hun An":      (0.50, 0.10, 0.45, 0.12, 0.07, 2.39),
+        "Akshay Bhatia":      (0.50, 0.41, 0.17, 0.05,-0.15, 2.43),
+        "Dustin Johnson":     (0.50, 0.17,-0.10, 0.16, 0.03, 2.35),
+        "Stephan Jaeger":     (0.45,-0.07, 0.20, 0.13, 0.00, 2.32),
+        "Eric Cole":          (0.45,-0.03, 0.35, 0.06, 0.18, 2.35),
+        "Nick Dunlap":        (0.45,-0.13, 0.24, 0.17,-0.12, 2.44),
+        "Taylor Moore":       (0.40,-0.05,-0.13, 0.04, 0.22, 2.49),
+        "Joaquin Niemann":    (0.35, 0.14,-0.15, 0.19,-0.07, 2.38),
+        "Sergio Garcia":      (0.30, 0.01, 0.03, 0.25, 0.27, 2.47),
+        "Patrick Reed":       (0.25, 0.24, 0.27, 0.32, 0.01, 2.23),
+        "Tiger Woods":        (0.20,-0.23, 0.05, 0.11, 0.27, 2.30),
+        "Phil Mickelson":     (0.10, 0.26, 0.31,-0.01, 0.01, 2.47),
+        "Danny Willett":      (0.10, 0.00, 0.32, 0.30,-0.04, 2.30),
+        "Bubba Watson":       (0.05,-0.27,-0.26, 0.00, 0.04, 2.32),
+        "Zach Johnson":       (0.00, 0.03, 0.10, 0.05, 0.07, 2.56),
+        "Fred Couples":       (-0.50, 0.14, 0.00,-0.15,-0.22, 2.54),
+        "Jose Maria Olazabal":(-0.80,-0.45,-0.29,-0.39,-0.28, 2.63),
+        "Vijay Singh":        (-1.00,-0.04,-0.27, 0.10,-0.05, 2.93),
+        "Larry Mize":         (-1.20,-0.40,-0.28,-0.05,-0.39, 2.71),
+        "Sandy Lyle":         (-1.50,-0.28,-0.45,-0.23,-0.12, 2.91),
+    }
+    stats = {}
+    for name, (sg_t, sg_ot, sg_a, sg_ag, sg_p, con) in raw.items():
+        stats[name] = {
+            "sg_total": sg_t, "sg_off_tee": sg_ot, "sg_approach": sg_a,
+            "sg_around_green": sg_ag, "sg_putting": sg_p, "consistency": con,
+        }
     return stats
 
 
