@@ -514,14 +514,14 @@ PARLAY_MARKETS = {
     "Outright Winner": {"key": "win", "desc": "Player wins the tournament"},
 }
 
-# Rough odds multipliers for non-outright markets (since API only gives outrights)
-# These approximate typical sportsbook pricing for placement markets
-MARKET_ODDS_FACTOR = {
-    "win": 1.0,        # use actual outright odds
-    "top5": 0.18,      # ~5x shorter than outright
-    "top10": 0.30,     # ~3x shorter
-    "top20": 0.50,     # ~2x shorter
-    "make_cut": 0.70,  # much shorter
+# Placement market probability multipliers relative to outright win probability
+# E.g., a player with 5% win probability has roughly 25% top-5 probability
+MARKET_PROB_MULTIPLIER = {
+    "win": 1.0,
+    "top5": 5.0,      # ~5x more likely to finish top 5 than win
+    "top10": 9.0,      # ~9x more likely to finish top 10
+    "top20": 15.0,     # ~15x more likely to finish top 20
+    "make_cut": 25.0,  # ~25x more likely to make cut
 }
 
 with tab_parlay:
@@ -558,12 +558,11 @@ with tab_parlay:
                 if market_key == "win":
                     leg_odds = outright_odds
                 else:
-                    # Convert outright odds to placement odds
+                    # Scale outright probability by market multiplier
                     outright_prob = american_to_implied_prob(outright_odds)
-                    factor = MARKET_ODDS_FACTOR[market_key]
-                    # Approximate: top-N prob is roughly outright_prob / factor_ratio
-                    placement_prob = min(outright_prob / factor + (1 - 1/factor) * 0.5, 0.85)
-                    placement_prob = max(placement_prob, outright_prob)
+                    multiplier = MARKET_PROB_MULTIPLIER.get(market_key, 1.0)
+                    placement_prob = min(outright_prob * multiplier, 0.90)
+                    placement_prob = max(placement_prob, 0.02)  # floor at 2%
                     from utils.odds_math import implied_prob_to_american
                     try:
                         leg_odds = implied_prob_to_american(placement_prob)
@@ -573,11 +572,14 @@ with tab_parlay:
                 odds_display = f"+{leg_odds}" if leg_odds > 0 else str(leg_odds)
                 dec_display = american_to_decimal(leg_odds)
 
-                # Get model probability for this market
+                # Get model probability for this market (use cached MC results)
                 model_market_prob = None
                 try:
-                    profiles = build_profiles_from_data(leaderboard, rankings)
-                    mc = monte_carlo_tournament(profiles, n_simulations=10000, seed=42)
+                    if "mc_cache" not in st.session_state:
+                        profiles = build_profiles_from_data(leaderboard, rankings)
+                        st.session_state.mc_cache = monte_carlo_tournament(
+                            profiles, n_simulations=10000, seed=42)
+                    mc = st.session_state.mc_cache
                     if p_sel in mc:
                         model_market_prob = mc[p_sel].get(market_key, 0)
                 except Exception:
